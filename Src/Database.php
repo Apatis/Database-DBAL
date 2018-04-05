@@ -228,6 +228,8 @@ class Database
         DB_PREFIX   = 'prefix',
         DB_PROTOCOL = 'protocol',
         DB_CHARSET  = 'charset',
+        DB_TIMEOUT  = 'timeout',
+        DB_OPTIONS  = 'options',
         DB_COLLATE  = 'collate';
 
     /**
@@ -241,6 +243,11 @@ class Database
         DRIVER_DB2     = 'ibm_db2',
         DRIVER_SQLSRV  = 'pdo_sqlsrv',
         DRIVER_OCI8    = 'oci8';
+
+    /**
+     * @var int default timeout
+     */
+    const DEFAULT_TIMEOUT = 5;
 
     /**
      * Last configurations param
@@ -261,6 +268,21 @@ class Database
          */
         $this->currentUserParams = $this->normalizeDatabaseParams($configs);
 
+        if (isset($this->currentUserParams[static::DB_PREFIX])) {
+            $prefix = $this->currentUserParams[static::DB_PREFIX];
+            if (!is_string($prefix) && ! is_bool($prefix) && !is_null($prefix)) {
+                throw new \InvalidArgumentException(
+                    'Prefix must be as a string %s given.',
+                    gettype($prefix)
+                );
+            }
+            if (is_string($prefix)) {
+                $this->currentTablePrefix = trim($prefix);
+            }
+        }
+
+        unset($this->currentUserParams[static::DB_PREFIX]);
+
         /**
          * Re-Sanitize Selected Driver
          */
@@ -274,11 +296,7 @@ class Database
             throw new DBALException('Database Name could not be empty.', E_USER_ERROR);
         }
 
-        /**
-         * create new parameters
-         */
         $this->currentUserParams[self::DB_DRIVER] = $this->currentSelectedDriver;
-
         /**
          * Remove Unwanted Params
          */
@@ -289,15 +307,13 @@ class Database
                 unset($params[$key]);
             }
         }
-
+        unset($params[self::DB_OPTIONS]);
         /**
          * Create New Connection
          */
         $this->currentConnection = DriverManager::getConnection($params);
-
         // set last params
         static::$lastParams = $this->currentUserParams;
-
         /**
          * Set Quote Identifier
          */
@@ -368,8 +384,11 @@ class Database
             self::DB_PREFIX   => 'dbprefix',
             self::DB_PROTOCOL => 'dbprotocol',
             self::DB_CHARSET  => 'dbcharset',
-            self::DB_COLLATE  => 'dbcollate'
+            self::DB_COLLATE  => 'dbcollate',
+            self::DB_TIMEOUT  => 'dbtimeout',
+            self::DB_OPTIONS  => 'dboptions',
         ];
+
         foreach ($toSanity as $key => $name) {
             if ($key === $name) {
                 continue;
@@ -479,6 +498,72 @@ class Database
             $currentUserParams[self::DB_CHARSET] = $charset;
         }
 
+        $defaultDriverOptions = [
+            \PDO::ATTR_TIMEOUT => static::DEFAULT_TIMEOUT,
+            \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION
+        ];
+
+        $defaultOptions = false;
+        if (!isset($currentUserParams[self::DB_OPTIONS])
+            || !is_array($currentUserParams[self::DB_OPTIONS])
+        ) {
+            $defaultOptions    = true;
+            $currentUserParams[self::DB_OPTIONS] = $defaultDriverOptions;
+        }
+
+        if (!isset($currentUserParams['driverOptions'])
+            || !is_array($currentUserParams['driverOptions'])
+        ) {
+            $currentUserParams['driverOptions'] = null;
+        }
+
+        if (!is_array($currentUserParams['driverOptions'])) {
+            $currentUserParams['driverOptions'] = [];
+        }
+
+        foreach ($currentUserParams['driverOptions'] as $key => $val) {
+            if (!is_int($key) || !is_int($val)) {
+                if ($key === \PDO::ATTR_TIMEOUT && is_float($val)) {
+                    continue;
+                }
+                unset($currentUserParams['driverOptions'][$key]);
+                continue;
+            }
+        }
+        foreach ($currentUserParams[self::DB_OPTIONS] as $key => $val) {
+            if (!is_int($key) || !is_int($val) || isset($currentUserParams['driverOptions'][$key])) {
+                continue;
+            }
+            $currentUserParams['driverOptions'][$key] = $val;
+        }
+
+        // default fallback to exception
+        $currentUserParams['driverOptions'][\PDO::ATTR_ERRMODE] = \PDO::ERRMODE_EXCEPTION;
+
+        if (isset($currentUserParams[self::DB_TIMEOUT])) {
+            // timeout
+            $timeout = $currentUserParams[self::DB_TIMEOUT];
+            $timeout = ! is_numeric($timeout) ? static::DEFAULT_TIMEOUT : intval($timeout);
+            $timeout = !is_int($timeout) ? 10 : $timeout;
+            $timeout = $timeout < 1 ? 5 : $timeout;
+            $currentUserParams[self::DB_TIMEOUT] = $timeout;
+        }
+        if (isset($timeout) || (
+                !isset($currentUserParams['driverOptions'][\PDO::ATTR_TIMEOUT])
+                || !is_numeric($currentUserParams['driverOptions'][\PDO::ATTR_TIMEOUT])
+            )
+        ) {
+            $currentUserParams['driverOptions'][\PDO::ATTR_TIMEOUT] = $timeout;
+        }
+
+        // correcting host
+        if (!isset($currentUserParams[self::DB_HOST])
+            || !$currentUserParams[self::DB_HOST]
+        ) {
+            $currentUserParams[self::DB_HOST] = 'localhost';
+        }
+
+        $currentUserParams['options'] = $currentUserParams['driverOptions'];
         return $currentUserParams;
     }
 
